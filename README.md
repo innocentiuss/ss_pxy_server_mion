@@ -4,13 +4,17 @@ install with the following shell command
 
 ### 1. install libsodium to support high-level encrypt algorithm
 
+For Debian/Ubuntu
 ```shell
-wget https://github.com/jedisct1/libsodium/releases/download/1.0.16/libsodium-1.0.16.tar.gz
-tar xf libsodium-1.0.16.tar.gz && cd libsodium-1.0.16
-./configure && make -j2 && make install
-echo /usr/local/lib > /etc/ld.so.conf.d/usr_local_lib.conf
-ldconfig
+apt install -y libsodium-dev
 ```
+
+For CentOS/Rocky/Alma/RHEL
+
+```shell
+dnf install -y libsodium-devel
+```
+
 ### 2. configure other environments
 
 For Python2.x
@@ -29,7 +33,7 @@ cp config.json user-config.json
 For Python3.x
 ```shell
 cd /root
-yum -y install python-pip
+yum -y install python3-pip
 git clone https://github.com/innocentiuss/personal_sspanel_backend.git
 cd personal_sspanel_backend/shadowsocks
 pip install -r requirements.txt
