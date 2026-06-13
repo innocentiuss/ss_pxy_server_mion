@@ -23,8 +23,8 @@ For Python2.x
 cd /root
 curl -sSL https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py
 python get-pip.py
-git clone https://github.com/innocentiuss/personal_sspanel_backend.git
-cd personal_sspanel_backend/shadowsocks
+git clone https://github.com/innocentiuss/ss_pxy_server_mion.git
+cd ss_pxy_server_mion/shadowsocks
 pip install -r requirements.txt
 cp apiconfig.py userapiconfig.py
 cp config.json user-config.json
@@ -34,8 +34,8 @@ For Python3.x
 ```shell
 cd /root
 yum -y install python3-pip
-git clone https://github.com/innocentiuss/personal_sspanel_backend.git
-cd personal_sspanel_backend/shadowsocks
+git clone https://github.com/innocentiuss/ss_pxy_server_mion.git
+cd ss_pxy_server_mion/shadowsocks
 pip install -r requirements.txt
 cp apiconfig.py userapiconfig.py
 cp config.json user-config.json
