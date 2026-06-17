@@ -13,6 +13,7 @@ For CentOS/Rocky/Alma/RHEL
 
 ```shell
 dnf install -y epel-release
+dnf makecache
 dnf install -y libsodium-devel
 ```
 
