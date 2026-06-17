@@ -12,6 +12,7 @@ apt install -y libsodium-dev
 For CentOS/Rocky/Alma/RHEL
 
 ```shell
+dnf install -y epel-release
 dnf install -y libsodium-devel
 ```
 
