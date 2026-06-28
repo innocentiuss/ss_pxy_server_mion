@@ -16,23 +16,6 @@
     "speed_limit_per_con": 0,
 
     "dns_ipv6": false,
-    "out_bind": "",
-    "out_bindv6": "",
-    "default_outbound": "ipv4",
-    "route_rules": [
-        {
-            "name": "google-ipv6",
-            "domains": [
-                "google.com",
-                "googleapis.com",
-                "gstatic.com",
-                "youtube.com",
-                "ytimg.com"
-            ],
-            "outbound": "ipv6",
-            "fallback": "ipv4"
-        }
-    ],
     "connect_verbose_info": 0,
     "connect_hex_data": 0,
     "redirect": "",
