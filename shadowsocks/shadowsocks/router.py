@@ -34,6 +34,14 @@ def match_domain_suffix(hostname, suffix):
     return hostname == suffix or hostname.endswith('.' + suffix)
 
 
+def match_domain_keyword(hostname, keyword):
+    hostname = normalize_domain(hostname)
+    keyword = normalize_domain(keyword)
+    if not hostname or not keyword:
+        return False
+    return keyword in hostname
+
+
 def _outbound_to_family(outbound):
     outbound = normalize_domain(outbound)
     if outbound == OUTBOUND_IPV4:
@@ -58,6 +66,22 @@ def _ip_outbound(hostname):
     return None
 
 
+def _as_list(value):
+    value = value or []
+    if not isinstance(value, list):
+        value = [value]
+    return value
+
+
+def _make_route(rule):
+    return {
+        'name': rule.get('name', ''),
+        'outbound': normalize_domain(rule.get('outbound', OUTBOUND_IPV4)),
+        'fallback': normalize_domain(rule.get('fallback', '')),
+        'matched': True
+    }
+
+
 def get_route(config, hostname):
     ip_outbound = _ip_outbound(hostname)
     if ip_outbound:
@@ -72,18 +96,12 @@ def get_route(config, hostname):
     for rule in rules:
         if not isinstance(rule, dict):
             continue
-        domains = rule.get('domains', []) or []
-        if not isinstance(domains, list):
-            domains = [domains]
-        for domain in domains:
+        for domain in _as_list(rule.get('domains', [])):
             if match_domain_suffix(hostname, domain):
-                return {
-                    'name': rule.get('name', ''),
-                    'outbound': normalize_domain(
-                        rule.get('outbound', OUTBOUND_IPV4)),
-                    'fallback': normalize_domain(rule.get('fallback', '')),
-                    'matched': True
-                }
+                return _make_route(rule)
+        for keyword in _as_list(rule.get('domain_keywords', [])):
+            if match_domain_keyword(hostname, keyword):
+                return _make_route(rule)
 
     default_outbound = normalize_domain(config.get('default_outbound', ''))
     if default_outbound:

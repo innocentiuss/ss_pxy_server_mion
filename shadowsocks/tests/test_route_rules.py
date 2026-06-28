@@ -27,6 +27,18 @@ class RouteRuleTest(unittest.TestCase):
         self.assertFalse(router.match_domain_suffix('badgoogle.com',
                                                     'google.com'))
 
+    def test_domain_keyword_match(self):
+        self.assertTrue(router.match_domain_keyword('www.google.com',
+                                                    'google'))
+        self.assertTrue(router.match_domain_keyword('googleapis.com',
+                                                    'google'))
+        self.assertTrue(router.match_domain_keyword('notgoogle.com',
+                                                    'google'))
+        self.assertTrue(router.match_domain_keyword('WWW.GOOGLE.COM.',
+                                                    'google'))
+        self.assertFalse(router.match_domain_keyword('', 'google'))
+        self.assertFalse(router.match_domain_keyword('www.google.com', ''))
+
     def test_route_rule_prefers_ipv6(self):
         config = {
             'default_outbound': 'ipv4',
@@ -38,6 +50,20 @@ class RouteRuleTest(unittest.TestCase):
             }]
         }
         route = router.get_route(config, b'www.google.com')
+        self.assertEqual(socket.AF_INET6, router.get_route_family(route))
+        self.assertEqual(socket.AF_INET, router.get_fallback_family(route))
+
+    def test_route_rule_domain_keyword_prefers_ipv6(self):
+        config = {
+            'default_outbound': 'ipv4',
+            'route_rules': [{
+                'name': 'google-keyword-ipv6',
+                'domain_keywords': ['google'],
+                'outbound': 'ipv6',
+                'fallback': 'ipv4'
+            }]
+        }
+        route = router.get_route(config, b'googleapis.com')
         self.assertEqual(socket.AF_INET6, router.get_route_family(route))
         self.assertEqual(socket.AF_INET, router.get_fallback_family(route))
 
