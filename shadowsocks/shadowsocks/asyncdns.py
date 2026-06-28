@@ -265,6 +265,26 @@ STATUS_IPV4 = 0
 STATUS_IPV6 = 1
 
 
+def _cache_key(hostname, family=None):
+    return (hostname, family)
+
+
+def _family_to_qtype(family):
+    if family == socket.AF_INET:
+        return QTYPE_A
+    if family == socket.AF_INET6:
+        return QTYPE_AAAA
+    return None
+
+
+def _qtype_to_family(qtype):
+    if qtype == QTYPE_A:
+        return socket.AF_INET
+    if qtype == QTYPE_AAAA:
+        return socket.AF_INET6
+    return None
+
+
 class DNSResolver(object):
 
     def __init__(self):
@@ -355,8 +375,8 @@ class DNSResolver(object):
         loop.add(self._sock, eventloop.POLL_IN, self)
         loop.add_periodic(self.handle_periodic)
 
-    def _call_callback(self, hostname, ip, error=None):
-        callbacks = self._hostname_to_cb.get(hostname, [])
+    def _call_callback(self, key, hostname, ip, error=None):
+        callbacks = self._hostname_to_cb.get(key, [])
         for callback in callbacks:
             if callback in self._cb_to_hostname:
                 del self._cb_to_hostname[callback]
@@ -365,49 +385,75 @@ class DNSResolver(object):
             else:
                 callback((hostname, None),
                          Exception('unable to parse hostname %s' % hostname))
-        if hostname in self._hostname_to_cb:
-            del self._hostname_to_cb[hostname]
-        if hostname in self._hostname_status:
-            del self._hostname_status[hostname]
+        if key in self._hostname_to_cb:
+            del self._hostname_to_cb[key]
+        if key in self._hostname_status:
+            del self._hostname_status[key]
+
+    def _find_ip(self, response, qtype=None):
+        for answer in response.answers:
+            if answer[1] in (QTYPE_A, QTYPE_AAAA) and \
+                    answer[2] == QCLASS_IN:
+                if qtype is None or answer[1] == qtype:
+                    return answer[0]
+        return None
+
+    def _handle_response_for_key(self, response, key, qtype):
+        hostname, family = key
+        if family:
+            expected_qtype = _family_to_qtype(family)
+            ip = self._find_ip(response, expected_qtype)
+            if ip:
+                self._cache[key] = ip
+                self._call_callback(key, hostname, ip)
+            else:
+                self._call_callback(key, hostname, None)
+            return
+
+        ip = self._find_ip(response)
+        if IPV6_CONNECTION_SUPPORT:
+            if not ip and self._hostname_status.get(key, STATUS_IPV4) \
+                    == STATUS_IPV6:
+                self._hostname_status[key] = STATUS_IPV4
+                self._send_req(hostname, QTYPE_A)
+            else:
+                if ip:
+                    self._cache[key] = ip
+                    self._call_callback(key, hostname, ip)
+                elif self._hostname_status.get(key, None) == STATUS_IPV4:
+                    if qtype == QTYPE_A:
+                        self._call_callback(key, hostname, None)
+        else:
+            if not ip and self._hostname_status.get(key, STATUS_IPV6) \
+                    == STATUS_IPV4:
+                self._hostname_status[key] = STATUS_IPV6
+                self._send_req(hostname, QTYPE_AAAA)
+            else:
+                if ip:
+                    self._cache[key] = ip
+                    self._call_callback(key, hostname, ip)
+                elif self._hostname_status.get(key, None) == STATUS_IPV6:
+                    if qtype == QTYPE_AAAA:
+                        self._call_callback(key, hostname, None)
 
     def _handle_data(self, data):
         response = parse_response(data)
         if response and response.hostname:
             hostname = response.hostname
-            ip = None
-            for answer in response.answers:
-                if answer[1] in (QTYPE_A, QTYPE_AAAA) and \
-                        answer[2] == QCLASS_IN:
-                    ip = answer[0]
-                    break
-            if IPV6_CONNECTION_SUPPORT:
-                if not ip and self._hostname_status.get(hostname, STATUS_IPV4) \
-                        == STATUS_IPV6:
-                    self._hostname_status[hostname] = STATUS_IPV4
-                    self._send_req(hostname, QTYPE_A)
-                else:
-                    if ip:
-                        self._cache[hostname] = ip
-                        self._call_callback(hostname, ip)
-                    elif self._hostname_status.get(hostname, None) == STATUS_IPV4:
-                        for question in response.questions:
-                            if question[1] == QTYPE_A:
-                                self._call_callback(hostname, None)
-                                break
-            else:
-                if not ip and self._hostname_status.get(hostname, STATUS_IPV6) \
-                        == STATUS_IPV4:
-                    self._hostname_status[hostname] = STATUS_IPV6
-                    self._send_req(hostname, QTYPE_AAAA)
-                else:
-                    if ip:
-                        self._cache[hostname] = ip
-                        self._call_callback(hostname, ip)
-                    elif self._hostname_status.get(hostname, None) == STATUS_IPV6:
-                        for question in response.questions:
-                            if question[1] == QTYPE_AAAA:
-                                self._call_callback(hostname, None)
-                                break
+            qtype = None
+            if response.questions:
+                qtype = response.questions[0][1]
+            keys = []
+            family = _qtype_to_family(qtype)
+            if family:
+                key = _cache_key(hostname, family)
+                if key in self._hostname_to_cb:
+                    keys.append(key)
+            legacy_key = _cache_key(hostname)
+            if legacy_key in self._hostname_to_cb:
+                keys.append(legacy_key)
+            for key in keys:
+                self._handle_response_for_key(response, key, qtype)
 
     def handle_event(self, sock, fd, event):
         if sock != self._sock:
@@ -432,16 +478,16 @@ class DNSResolver(object):
         self._cache.sweep()
 
     def remove_callback(self, callback):
-        hostname = self._cb_to_hostname.get(callback)
-        if hostname:
+        key = self._cb_to_hostname.get(callback)
+        if key:
             del self._cb_to_hostname[callback]
-            arr = self._hostname_to_cb.get(hostname, None)
+            arr = self._hostname_to_cb.get(key, None)
             if arr:
                 arr.remove(callback)
                 if not arr:
-                    del self._hostname_to_cb[hostname]
-                    if hostname in self._hostname_status:
-                        del self._hostname_status[hostname]
+                    del self._hostname_to_cb[key]
+                    if key in self._hostname_status:
+                        del self._hostname_status[key]
 
     def _send_req(self, hostname, qtype):
         req = build_request(hostname, qtype)
@@ -450,20 +496,33 @@ class DNSResolver(object):
                           hostname, qtype, server)
             self._sock.sendto(req, server)
 
-    def resolve(self, hostname, callback):
+    def resolve(self, hostname, callback, family=None):
         if type(hostname) != bytes:
             hostname = hostname.encode('utf8')
+        key = _cache_key(hostname, family)
         if not hostname:
             callback(None, Exception('empty hostname'))
         elif common.is_ip(hostname):
-            callback((hostname, hostname), None)
+            ip_family = common.is_ip(hostname)
+            if family is None or family == ip_family:
+                callback((hostname, hostname), None)
+            else:
+                callback((hostname, None),
+                         Exception('hostname %s is not requested family' %
+                                   hostname))
         elif hostname in self._hosts:
             logging.debug('hit hosts: %s', hostname)
             ip = self._hosts[hostname]
-            callback((hostname, ip), None)
-        elif hostname in self._cache:
-            logging.debug('hit cache: %s', hostname)
-            ip = self._cache[hostname]
+            ip_family = common.is_ip(ip)
+            if family is None or family == ip_family:
+                callback((hostname, ip), None)
+            else:
+                callback((hostname, None),
+                         Exception('hosts entry %s is not requested family' %
+                                   hostname))
+        elif key in self._cache:
+            logging.debug('hit cache: %s %s', hostname, family)
+            ip = self._cache[key]
             callback((hostname, ip), None)
         else:
             if not is_valid_hostname(hostname):
@@ -478,20 +537,28 @@ class DNSResolver(object):
                     self._cache[hostname] = sa[0]
                     callback((hostname, sa[0]), None)
                     return
-            arr = self._hostname_to_cb.get(hostname, None)
+            arr = self._hostname_to_cb.get(key, None)
             if not arr:
-                if IPV6_CONNECTION_SUPPORT:
-                    self._hostname_status[hostname] = STATUS_IPV6
+                qtype = _family_to_qtype(family)
+                if qtype:
+                    self._hostname_status[key] = \
+                        family == socket.AF_INET6 and STATUS_IPV6 or STATUS_IPV4
+                    self._send_req(hostname, qtype)
+                elif IPV6_CONNECTION_SUPPORT:
+                    self._hostname_status[key] = STATUS_IPV6
                     self._send_req(hostname, QTYPE_AAAA)
                 else:
-                    self._hostname_status[hostname] = STATUS_IPV4
+                    self._hostname_status[key] = STATUS_IPV4
                     self._send_req(hostname, QTYPE_A)
-                self._hostname_to_cb[hostname] = [callback]
-                self._cb_to_hostname[callback] = hostname
+                self._hostname_to_cb[key] = [callback]
+                self._cb_to_hostname[callback] = key
             else:
                 arr.append(callback)
                 # TODO send again only if waited too long
-                if IPV6_CONNECTION_SUPPORT:
+                qtype = _family_to_qtype(family)
+                if qtype:
+                    self._send_req(hostname, qtype)
+                elif IPV6_CONNECTION_SUPPORT:
                     self._send_req(hostname, QTYPE_AAAA)
                 else:
                     self._send_req(hostname, QTYPE_A)

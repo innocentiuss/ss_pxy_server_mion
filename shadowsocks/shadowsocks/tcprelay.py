@@ -29,7 +29,7 @@ import random
 import platform
 import threading
 
-from shadowsocks import encrypt, obfs, eventloop, shell, common
+from shadowsocks import encrypt, obfs, eventloop, shell, common, router
 from shadowsocks.common import pre_parse_header, parse_header, IPNetwork, PortRange
 
 # we clear at most TIMEOUTS_CLEAN_SIZE timeouts each time
@@ -215,6 +215,11 @@ class TCPRelayHandler(object):
         self._upstream_status = WAIT_STATUS_READING
         self._downstream_status = WAIT_STATUS_INIT
         self._remote_address = None
+        self._route = None
+        self._route_family = None
+        self._route_fallback_family = None
+        self._route_fallback_used = False
+        self._route_hostname = None
 
         self._header_buf = []
         if is_local:
@@ -931,13 +936,74 @@ class TCPRelayHandler(object):
                             self._header_buf = []
                     self._data_to_write_to_remote.append(data[header_length:])
                 # notice here may go into _handle_dns_resolved directly
+                self._set_route(remote_addr)
                 self._dns_resolver.resolve(remote_addr,
-                                           self._handle_dns_resolved)
+                                           self._handle_dns_resolved,
+                                           family=self._route_family)
         except Exception as e:
             self._log_error(e)
             if self._config['verbose']:
                 traceback.print_exc()
             self.destroy()
+
+    def _set_route(self, remote_addr):
+        self._route = router.get_route(self._config, remote_addr)
+        self._route_family = router.get_route_family(self._route)
+        self._route_fallback_family = router.get_fallback_family(self._route)
+        self._route_fallback_used = False
+        self._route_hostname = remote_addr
+        if self._route.get('matched') or self._route_family:
+            logging.debug('route %s to %s fallback %s',
+                          common.to_str(remote_addr),
+                          self._route.get('outbound'),
+                          self._route.get('fallback'))
+
+    def _close_remote_sockets(self):
+        if self._remote_sock:
+            try:
+                self._loop.removefd(self._remote_sock_fd)
+            except Exception as e:
+                shell.print_exception(e)
+            try:
+                if self._remote_sock_fd is not None:
+                    del self._fd_to_handlers[self._remote_sock_fd]
+            except Exception as e:
+                shell.print_exception(e)
+            self._remote_sock.close()
+            self._remote_sock = None
+            self._remote_sock_fd = None
+        if self._remote_sock_v6:
+            try:
+                self._loop.removefd(self._remotev6_sock_fd)
+            except Exception as e:
+                shell.print_exception(e)
+            try:
+                if self._remotev6_sock_fd is not None:
+                    del self._fd_to_handlers[self._remotev6_sock_fd]
+            except Exception as e:
+                shell.print_exception(e)
+            self._remote_sock_v6.close()
+            self._remote_sock_v6 = None
+            self._remotev6_sock_fd = None
+
+    def _try_route_fallback(self, reason):
+        if self._is_local or not self._route_fallback_family:
+            return False
+        if self._route_fallback_used or self._route_family != socket.AF_INET6:
+            return False
+        if not self._route_hostname:
+            return False
+        self._route_fallback_used = True
+        self._route_family = self._route_fallback_family
+        self._route_fallback_family = None
+        self._close_remote_sockets()
+        self._stage = STAGE_DNS
+        logging.info('route fallback to IPv4 for %s: %s',
+                     common.to_str(self._route_hostname), reason)
+        self._dns_resolver.resolve(self._route_hostname,
+                                   self._handle_dns_resolved,
+                                   family=self._route_family)
+        return True
 
     def _socket_bind_addr(self, sock, af):
         bind_addr = ''
@@ -1084,6 +1150,8 @@ class TCPRelayHandler(object):
 
     def _handle_dns_resolved(self, result, error):
         if error:
+            if self._try_route_fallback(error):
+                return
             self._log_error(error)
             self.destroy()
             return
@@ -1147,6 +1215,8 @@ class TCPRelayHandler(object):
                                 self._write_to_sock(data, self._remote_sock)
                     return
                 except Exception as e:
+                    if self._try_route_fallback(e):
+                        return
                     shell.print_exception(e)
                     if self._config['verbose']:
                         traceback.print_exc()
@@ -1523,7 +1593,8 @@ class TCPRelayHandler(object):
     def _on_remote_error(self):
         logging.debug('got remote error')
         if self._remote_sock:
-            logging.error(eventloop.get_sock_error(self._remote_sock))
+            sock_error = eventloop.get_sock_error(self._remote_sock)
+            logging.error(sock_error)
             if self._remote_address:
                 logging.error(
                     "when connect to %s:%d from %s:%d via port %d" %
@@ -1537,6 +1608,9 @@ class TCPRelayHandler(object):
                     "exception from %s:%d" %
                     (self._client_address[0],
                      self._client_address[1]))
+            if self._stage == STAGE_CONNECTING and \
+                    self._try_route_fallback(sock_error):
+                return
         self.destroy()
 
     def handle_event(self, sock, fd, event):
@@ -1631,30 +1705,9 @@ class TCPRelayHandler(object):
             logging.debug('destroy')
         if self._remote_sock:
             logging.debug('destroying remote')
-            try:
-                self._loop.removefd(self._remote_sock_fd)
-            except Exception as e:
-                shell.print_exception(e)
-            try:
-                if self._remote_sock_fd is not None:
-                    del self._fd_to_handlers[self._remote_sock_fd]
-            except Exception as e:
-                shell.print_exception(e)
-            self._remote_sock.close()
-            self._remote_sock = None
         if self._remote_sock_v6:
             logging.debug('destroying remote_v6')
-            try:
-                self._loop.removefd(self._remotev6_sock_fd)
-            except Exception as e:
-                shell.print_exception(e)
-            try:
-                if self._remotev6_sock_fd is not None:
-                    del self._fd_to_handlers[self._remotev6_sock_fd]
-            except Exception as e:
-                shell.print_exception(e)
-            self._remote_sock_v6.close()
-            self._remote_sock_v6 = None
+        self._close_remote_sockets()
         if self._local_sock:
             logging.debug('destroying local')
             try:

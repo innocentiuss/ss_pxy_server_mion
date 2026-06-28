@@ -71,7 +71,7 @@ import random
 import binascii
 import traceback
 
-from shadowsocks import encrypt, obfs, eventloop, lru_cache, common, shell
+from shadowsocks import encrypt, obfs, eventloop, lru_cache, common, shell, router
 from shadowsocks.common import pre_parse_header, parse_header, pack_addr, IPNetwork, PortRange
 
 # for each handler, we have 2 stream directions:
@@ -536,14 +536,27 @@ class UDPRelay(object):
         if self._is_local:
             addrtype = 3
             server_addr, server_port = self._get_a_server()
+            route_family = None
+            fallback_family = None
         else:
             server_addr, server_port = dest_addr, dest_port
+            route = router.get_route(self._config, server_addr)
+            route_family = router.get_route_family(route)
+            fallback_family = router.get_fallback_family(route)
+            if route.get('matched') or route_family:
+                logging.debug('UDP route %s to %s fallback %s',
+                              common.to_str(server_addr),
+                              route.get('outbound'),
+                              route.get('fallback'))
 
         if (addrtype & 7) == 3:
             af = common.is_ip(server_addr)
             if af == False:
                 handler = common.UDPAsyncDNSHandler((data, r_addr, uid, header_length, is_relay))
-                handler.resolve(self._dns_resolver, (server_addr, server_port), self._handle_server_dns_resolved)
+                handler.resolve(self._dns_resolver, (server_addr, server_port),
+                                self._handle_server_dns_resolved,
+                                family=route_family,
+                                fallback_family=fallback_family)
             else:
                 self._handle_server_dns_resolved("", (server_addr, server_port), server_addr, (data, r_addr, uid, header_length, is_relay))
         else:
