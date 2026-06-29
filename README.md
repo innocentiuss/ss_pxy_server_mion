@@ -35,7 +35,7 @@ cp config.json user-config.json
 For Python3.x
 ```shell
 cd /root
-yum -y install python3-pip
+dnf -y install python3-pip
 git clone https://github.com/innocentiuss/ss_pxy_server_mion.git
 cd ss_pxy_server_mion/shadowsocks
 pip install -r requirements.txt
