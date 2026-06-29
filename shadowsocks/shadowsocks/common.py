@@ -411,26 +411,54 @@ class UDPAsyncDNSHandler(object):
         self.params = params
         self.remote_addr = None
         self.call_back = None
+        self.family = None
+        self.fallback_family = None
+        self._fallback_used = False
 
-    def resolve(self, dns_resolver, remote_addr, call_back):
-        if remote_addr in UDPAsyncDNSHandler.dns_cache:
+    def _cache_key(self, remote_addr, family):
+        return (remote_addr, family)
+
+    def resolve(self, dns_resolver, remote_addr, call_back, family=None,
+                fallback_family=None):
+        cache_key = self._cache_key(remote_addr, family)
+        if cache_key in UDPAsyncDNSHandler.dns_cache:
             if call_back:
-                call_back("", remote_addr, UDPAsyncDNSHandler.dns_cache[remote_addr], self.params)
+                call_back("", remote_addr,
+                          UDPAsyncDNSHandler.dns_cache[cache_key],
+                          self.params)
         else:
             self.call_back = call_back
             self.remote_addr = remote_addr
-            dns_resolver.resolve(remote_addr[0], self._handle_dns_resolved)
+            self.family = family
+            self.fallback_family = fallback_family
+            self.dns_resolver = dns_resolver
+            dns_resolver.resolve(remote_addr[0], self._handle_dns_resolved,
+                                 family=family)
             UDPAsyncDNSHandler.dns_cache.sweep()
 
     def _handle_dns_resolved(self, result, error):
         if error:
+            if self.fallback_family and not self._fallback_used:
+                self._fallback_used = True
+                self.family = self.fallback_family
+                return self.dns_resolver.resolve(
+                    self.remote_addr[0], self._handle_dns_resolved,
+                    family=self.family)
             logging.error("%s when resolve DNS" % (error,)) #drop
             return self.call_back(error, self.remote_addr, None, self.params)
         if result:
             ip = result[1]
             if ip:
+                cache_key = self._cache_key(self.remote_addr, self.family)
+                UDPAsyncDNSHandler.dns_cache[cache_key] = ip
                 return self.call_back("", self.remote_addr, ip, self.params)
         logging.warning("can't resolve %s" % (self.remote_addr,))
+        if self.fallback_family and not self._fallback_used:
+            self._fallback_used = True
+            self.family = self.fallback_family
+            return self.dns_resolver.resolve(
+                self.remote_addr[0], self._handle_dns_resolved,
+                family=self.family)
         return self.call_back("fail to resolve", self.remote_addr, None, self.params)
 
 def test_inet_conv():
